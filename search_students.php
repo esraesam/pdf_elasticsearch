@@ -15,27 +15,27 @@ function searchStudents($query) {
             'index' => 'pdf_files',
             'body' => [
                 'query' => [
-                    'nested' => [
-                        'path' => 'students',
-                        'query' => [
-                            'match' => [
-                                'students.name' => [
-                                    'query' => $query,
-                                    'analyzer' => 'arabic'
+                    'bool' => [
+                        'should' => [
+                            [
+                                'wildcard' => [
+                                    'student_names' => "$query"
+                                ]
+                            ],
+                            [
+                                'match' => [
+                                    'student_names' => [
+                                        'query' => $query,
+                                        'fuzziness' => 'AUTO'
+                                    ]
                                 ]
                             ]
-                        ],
-                        'inner_hits' => new \stdClass()
+                        ]
                     ]
                 ],
                 'highlight' => [
                     'fields' => [
-                        'students.name' => [
-                            'type' => 'unified',
-                            'fragment_size' => 150,
-                            'number_of_fragments' => 3,
-                            'no_match_size' => 150
-                        ]
+                        'student_names' => new \stdClass()
                     ]
                 ]
             ]
@@ -45,12 +45,18 @@ function searchStudents($query) {
         
         $results = array();
         foreach ($response['hits']['hits'] as $hit) {
-            foreach ($hit['inner_hits']['students']['hits']['hits'] as $student) {
+            $fileName = $hit['_source']['file_name'];
+            $matchedStudents = array_filter($hit['_source']['student_names'], function($name) use ($query) {
+                return mb_stripos($name, $query) !== false;
+            });
+
+            foreach ($matchedStudents as $student) {
                 $results[] = [
-                    'name' => $student['_source']['name'],
-                    'highlighted_name' => $student['highlight']['students.name'][0] ?? $student['_source']['name'],
-                    'file_name' => $hit['_source']['file_name'],
-                    'file_url' => $hit['_source']['file_url']
+                    'name' => $student,
+                    'file_name' => $fileName,
+                    'highlighted_name' => isset($hit['highlight']['student_names']) 
+                        ? $hit['highlight']['student_names'][0] 
+                        : $student
                 ];
             }
         }
@@ -63,18 +69,17 @@ function searchStudents($query) {
 }
 
 // Main execution
+header('Content-Type: application/json; charset=utf-8');
+
 try {
     $query = $_GET['query'] ?? '';
 
-    if (empty($query)) {
-        throw new Exception('Search query not provided');
+    if (mb_strlen($query) < 2) {
+        echo json_encode(['results' => []]);
+    } else {
+        $searchResults = searchStudents($query);
+        echo json_encode(['results' => $searchResults], JSON_UNESCAPED_UNICODE);
     }
-
-    $searchResults = searchStudents($query);
-    
-    echo json_encode([
-        'results' => $searchResults
-    ]);
 } catch (Exception $e) {
     http_response_code(500);
     echo json_encode(['error' => $e->getMessage()]);
