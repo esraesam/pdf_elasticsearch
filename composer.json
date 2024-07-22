@@ -1,0 +1,15 @@
+{
+    "require": {
+        "elasticsearch/elasticsearch": "^8.14",
+        "kreait/firebase-php": "^5.26",
+        "google/cloud-storage": "^1.24.1",
+        "guzzlehttp/guzzle": "^7.9",
+        "google/auth": "^1.18",
+        "smalot/pdfparser": "^2.10"
+    },
+    "config": {
+        "allow-plugins": {
+            "php-http/discovery": true
+        }
+    }
+}
