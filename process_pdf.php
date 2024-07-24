@@ -7,146 +7,145 @@ use Elastic\Elasticsearch\ClientBuilder;
 use Smalot\PdfParser\Parser;
 
 function createElasticsearchClient() {
-    return ClientBuilder::create()
-        ->setHosts(['https://localhost:9200'])
-        ->setBasicAuthentication('elastic', 'esra1999')
-        ->setSSLVerification(false)  // Only for development
-        ->build();
-}
-
-function forceCreateIndex($client) {
-    $indexName = 'pdf_files';
-    $params = [
-        'index' => $indexName,
-        'body' => [
-            'mappings' => [
-                'properties' => [
-                    'file_name' => ['type' => 'text'],
-                    'file_url' => ['type' => 'text'],
-                    'upload_date' => [
-                        'type' => 'date',
-                        'format' => 'strict_date_optional_time||epoch_millis'
-                    ],
-                    'student_names' => ['type' => 'text']
-                ]
-            ]
-        ]
-    ];
-
     try {
-        $client->indices()->create($params);
-    } catch (\Exception $e) {
-        // If the index already exists, that's fine, we can continue
-        if (!strpos($e->getMessage(), 'resource_already_exists_exception')) {
-            throw $e;
-        }
+        $client = ClientBuilder::create()
+            ->setHosts(['https://localhost:9200'])
+            ->setBasicAuthentication('elastic', 'esra1999')
+            ->setSSLVerification(false)  // Only for development
+            ->build();
+        error_log("Elasticsearch client created successfully");
+        return $client;
+    } catch (Exception $e) {
+        error_log("Error creating Elasticsearch client: " . $e->getMessage());
+        throw $e;
     }
 }
+
+function ensureIndexExists($client) {
+    $indexName = 'pdf_files';
+    try {
+        $exists = $client->indices()->exists(['index' => $indexName]);
+        if (!$exists) {
+            $params = [
+                'index' => $indexName,
+                'body' => [
+                    'mappings' => [
+                        'properties' => [
+                            'file_name' => ['type' => 'text'],
+                            'file_url' => ['type' => 'text'],
+                            'upload_date' => [
+                                'type' => 'date',
+                                'format' => 'strict_date_optional_time||epoch_millis'
+                            ],
+                            'student_names' => ['type' => 'text']
+                        ]
+                    ]
+                ]
+            ];
+            $client->indices()->create($params);
+            error_log("Index 'pdf_files' created successfully");
+        } else {
+            error_log("Index 'pdf_files' already exists");
+        }
+    } catch (Exception $e) {
+        error_log("Error ensuring index exists: " . $e->getMessage());
+        throw $e;
+    }
+}
+
 function extractStudentNames($pdfUrl) {
-    $parser = new Parser();
-    $pdf = $parser->parseFile($pdfUrl);
-    $text = $pdf->getText();
-    
-    // Split the text into lines
-    $lines = explode("\n", $text);
-    
-    $students = array();
-    
-    foreach ($lines as $line) {
-        // Match lines that start with a number or 'غ', followed by a 12-digit ID
-        if (preg_match('/^(\d+|غ)\t(\d{12})(.+?)(\d|$)/', $line, $matches)) {
-            $fullName = trim($matches[3]);
-            
-            // Remove any trailing numbers or special characters
-            $fullName = preg_replace('/[\d\sغ]+$/', '', $fullName);
-            
-            // Trim any leading or trailing whitespace
-            $fullName = trim($fullName);
-            
-            if (!empty($fullName)) {
-                // Split the name into words
-                $words = explode(' ', $fullName);
+    try {
+        $parser = new Parser();
+        $pdf = $parser->parseFile($pdfUrl);
+        $text = $pdf->getText();
+        
+        // Split the text into lines
+        $lines = explode("\n", $text);
+        
+        $students = array();
+        
+        foreach ($lines as $line) {
+            // Match lines that start with a number or 'غ', followed by a 12-digit ID
+            if (preg_match('/^(\d+|غ)\t(\d{12})(.+?)(\d|$)/', $line, $matches)) {
+                $fullName = trim($matches[3]);
                 
-                // Reverse the letters in each word
-                $correctedWords = array_map(function($word) {
-                    return implode('', array_reverse(preg_split('//u', $word, -1, PREG_SPLIT_NO_EMPTY)));
-                }, $words);
+                // Remove any trailing numbers or special characters
+                $fullName = preg_replace('/[\d\sغ]+$/', '', $fullName);
                 
-                // Reverse the order of the corrected words
-                $correctedWords = array_reverse($correctedWords);
+                // Trim any leading or trailing whitespace
+                $fullName = trim($fullName);
                 
-                // Join the corrected words back together
-                $correctedName = implode(' ', $correctedWords);
-                
-                $students[] = $correctedName;
+                if (!empty($fullName)) {
+                    // Split the name into words
+                    $words = explode(' ', $fullName);
+                    
+                    // Reverse the letters in each word
+                    $correctedWords = array_map(function($word) {
+                        return implode('', array_reverse(preg_split('//u', $word, -1, PREG_SPLIT_NO_EMPTY)));
+                    }, $words);
+                    
+                    // Reverse the order of the corrected words
+                    $correctedWords = array_reverse($correctedWords);
+                    
+                    // Join the corrected words back together
+                    $correctedName = implode(' ', $correctedWords);
+                    
+                    $students[] = $correctedName;
+                }
             }
         }
+        
+        error_log("Extracted " . count($students) . " student names");
+        return $students;
+    } catch (Exception $e) {
+        error_log("Error extracting student names: " . $e->getMessage());
+        throw $e;
     }
-    
-    return $students;
 }
-
-function mb_strrev($str){
-    $reversed = '';
-    $length = mb_strlen($str, 'UTF-8');
-    while ($length-- > 0) {
-        $reversed .= mb_substr($str, $length, 1, 'UTF-8');
-    }
-    return $reversed;
-}
-
 
 function indexPDF($pdfUrl, $fileName) {
-    $client = createElasticsearchClient();
-    forceCreateIndex($client);
+    try {
+        $client = createElasticsearchClient();
+        ensureIndexExists($client);
 
-    // Check if the file is already indexed
-    $params = [
-        'index' => 'pdf_files',
-        'body' => [
-            'query' => [
-                'match' => [
-                    'file_name' => $fileName
-                ]
+        error_log("Extracting student names from PDF");
+        $students = extractStudentNames($pdfUrl);
+
+        $params = [
+            'index' => 'pdf_files',
+            'body' => [
+                'file_name' => $fileName,
+                'file_url' => $pdfUrl,
+                'upload_date' => date('Y-m-d\TH:i:s\Z'), // ISO 8601 format
+                'student_names' => $students
             ]
-        ]
-    ];
-
-    $response = $client->search($params);
-
-    if ($response['hits']['total']['value'] > 0) {
-        return [
-            'status' => 'already_indexed',
-            'message' => 'File is already indexed.'
         ];
+
+        error_log("Indexing PDF: " . json_encode($params));
+        $response = $client->index($params);
+
+        error_log("PDF indexed successfully. Response: " . json_encode($response));
+        return [
+            'status' => 'success',
+            'message' => 'File indexed successfully.',
+            'id' => $response['_id']
+        ];
+    } catch (Exception $e) {
+        error_log("Error indexing PDF: " . $e->getMessage());
+        throw $e;
     }
-
-    $students = extractStudentNames($pdfUrl);
-
-    $params = [
-        'index' => 'pdf_files',
-        'body' => [
-            'file_name' => $fileName,
-            'file_url' => $pdfUrl,
-            'upload_date' => date('Y-m-d\TH:i:s\Z'), // ISO 8601 format
-            'student_names' => $students
-        ]
-    ];
-
-    $response = $client->index($params);
-
-    return [
-        'status' => 'success',
-        'message' => 'File indexed successfully.',
-        'id' => $response['_id']
-    ];
 }
 
 // Main execution
+error_log("Received request to index PDF");
 $pdfUrl = $_POST['pdfUrl'] ?? '';
 $fileName = $_POST['fileName'] ?? '';
 
+error_log("PDF URL: $pdfUrl");
+error_log("File Name: $fileName");
+
 if (empty($pdfUrl) || empty($fileName)) {
+    error_log("PDF URL or file name not provided");
     echo json_encode([
         'status' => 'error',
         'message' => 'PDF URL or file name not provided'
@@ -154,8 +153,10 @@ if (empty($pdfUrl) || empty($fileName)) {
 } else {
     try {
         $result = indexPDF($pdfUrl, $fileName);
+        error_log("Indexing result: " . json_encode($result));
         echo json_encode($result);
-    } catch (\Exception $e) {
+    } catch (Exception $e) {
+        error_log("Error in main execution: " . $e->getMessage());
         echo json_encode([
             'status' => 'error',
             'message' => 'Error: ' . $e->getMessage()
